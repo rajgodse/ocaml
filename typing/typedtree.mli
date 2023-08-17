@@ -297,10 +297,19 @@ and 'k case =
    [Guard_pattern] *)
 and guard =
   | Predicate of expression
-  | Pattern of expression * computation general_pattern
-  (* [Pattern (scrutinee, pattern)] represents a pattern guard. The case will
-     be taken if [scrutinee] evaluates to a value matching [pattern]. Variables
-     bound by the pattern match are available on the RHS of the case. *)
+  | Pattern of pattern_guard
+  (* [Pattern (scrutinee, pattern, partial)] represents a pattern guard.
+     The case will be taken if [scrutinee] evaluates to a value matching
+     [pattern]. Variables bound by the pattern match are available on the RHS of
+     the case. Like the [Texp_match] constructor,  [partial] denotes whether the
+     case matches the scrutinee partially or totally. *)
+
+and pattern_guard =
+  { pg_scrutinee      : expression
+  ; pg_pattern        : computation general_pattern
+  ; pg_partial        : partial
+  ; pg_loc            : Location.t
+  }
 
 and function_param =
   {

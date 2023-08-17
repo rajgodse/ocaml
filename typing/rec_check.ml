@@ -1244,7 +1244,7 @@ and case
            This judgement uses uses the one in [match_expression] as a
            "subroutine."
         *)
-        | Some (Pattern (e, pat)) ->
+        | Some (Pattern { pg_scrutinee = e; pg_pattern = pat; _ }) ->
           let cases = [ { c_lhs = pat; c_guard = None; c_rhs } ] in
           match_expression e cases
       in

@@ -945,7 +945,7 @@ and case
 
 and guard i ppf = function
   | Predicate p -> expression i ppf p
-  | Pattern (e, pat) ->
+  | Pattern { pg_scrutinee = e; pg_pattern = pat; _ } ->
       expression i ppf e;
       pattern i ppf pat
 

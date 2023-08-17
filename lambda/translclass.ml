@@ -187,7 +187,8 @@ let rec build_object_init ~scopes cl_table obj params inh_init obj_init cl =
                    ~attr:default_function_attribute
                    ~loc:(of_location ~scopes pat.pat_loc)
                    ~body:(Matching.for_function ~scopes pat.pat_loc
-                             None (Lvar param) [pat, rem] partial)
+                             None (Lvar param)
+                             [pat, Matching.mk_unguarded_rhs rem] partial)
        in
        begin match obj_init with
          Lfunction {kind = Curried; params; body = rem} -> build params rem
@@ -451,7 +452,8 @@ let rec transl_class_rebind ~scopes obj_init cl vf =
                   ~attr:default_function_attribute
                   ~loc:(of_location ~scopes pat.pat_loc)
                   ~body:(Matching.for_function ~scopes pat.pat_loc
-                            None (Lvar param) [pat, rem] partial)
+                            None (Lvar param)
+                            [pat, Matching.mk_unguarded_rhs rem] partial)
       in
       (path, path_lam,
        match obj_init with

@@ -19,14 +19,31 @@ open Typedtree
 open Lambda
 open Debuginfo.Scoped_location
 
+(* Right-hand side of a case. *)
+type rhs
+
+(* Creates a guarded rhs.
+
+   If a guard fails, a guarded rhs must fallthrough to the remaining cases.
+   To facilitate this, guarded rhs's are constructed using a continuation.
+
+   [mk_guarded ~patch_guarded] produces a guarded rhs with a lambda
+   representation given by [patch_guarded ~patch], where [patch] contains an
+   expression that falls through to the remaining cases.
+*)
+val mk_guarded_rhs: patch_guarded:(patch:lambda -> lambda) -> rhs
+
+(* Creates an unguarded rhs from its lambda representation. *)
+val mk_unguarded_rhs: lambda -> rhs
+
 (* Entry points to match compiler *)
 val for_function:
         scopes:scopes -> Location.t ->
-        int ref option -> lambda -> (pattern * lambda) list -> partial ->
+        int ref option -> lambda -> (pattern * rhs) list -> partial ->
         lambda
 val for_trywith:
         scopes:scopes -> Location.t ->
-        lambda -> (pattern * lambda) list ->
+        lambda -> (pattern * rhs) list ->
         lambda
 val for_let:
         scopes:scopes -> Location.t ->
@@ -34,12 +51,12 @@ val for_let:
         lambda
 val for_multiple_match:
         scopes:scopes -> Location.t ->
-        lambda list -> (pattern * lambda) list -> partial ->
+        lambda list -> (pattern * rhs) list -> partial ->
         lambda
 
 val for_tupled_function:
         scopes:scopes -> Location.t ->
-        Ident.t list -> (pattern list * lambda) list -> partial ->
+        Ident.t list -> (pattern list * rhs) list -> partial ->
         lambda
 
 (** [for_optional_arg_default pat body ~default_arg ~param] is:

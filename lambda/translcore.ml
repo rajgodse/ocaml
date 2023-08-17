@@ -251,7 +251,8 @@ and transl_exp0 ~in_new_scope ~scopes e =
         (transl_apply ~scopes ~tailcall ~inlined ~specialised
            (transl_exp ~scopes funct) oargs (of_location ~scopes e.exp_loc))
   | Texp_match(arg, pat_expr_list, partial) ->
-      transl_match ~scopes e arg pat_expr_list partial
+      transl_match ~scopes ~loc:e.exp_loc ~extra_cases:[] arg pat_expr_list
+        partial
   | Texp_try(body, pat_expr_list) ->
       let id = Typecore.name_cases "exn" pat_expr_list in
       Ltrywith(transl_exp ~scopes body, id,
@@ -587,11 +588,49 @@ and transl_list_with_shape ~scopes expr_list =
 and transl_guard ~scopes guard rhs =
   let expr = event_before ~scopes rhs (transl_exp ~scopes rhs) in
   match guard with
-  | None -> expr
+  | None -> Matching.mk_unguarded_rhs expr
   | Some (Predicate cond) ->
-       event_before ~scopes cond
-         (Lifthenelse(transl_exp ~scopes cond, expr, staticfail))
-  | Some (Pattern _) -> failwith "guard pattern translation unimplemented"
+      let patch_guarded ~patch =
+        event_before ~scopes cond
+          (Lifthenelse(transl_exp ~scopes cond, expr, patch))
+      in
+      Matching.mk_guarded_rhs ~patch_guarded
+  | Some (Pattern { pg_scrutinee; pg_pattern; pg_partial; pg_loc }) ->
+      let guard_case : _ case =
+        { c_lhs = pg_pattern
+        ; c_guard = None
+        ; c_rhs = rhs }
+      in
+      match pg_partial with
+      | Partial ->
+          (* Partial pattern guards may fail to match, so we must construct a
+             guarded rhs from a continuation that patches in the code to execute
+             on match failure.
+          *)
+          let patch_guarded ~patch =
+            let any_pat : pattern =
+              { pat_desc = Tpat_any
+              ; pat_loc = Location.none
+              ; pat_extra = []
+              ; pat_type = pg_scrutinee.exp_type
+              ; pat_env = Env.empty
+              ; pat_attributes = []
+              }
+            in
+            let extra_cases = [ any_pat, Matching.mk_unguarded_rhs patch ] in
+            event_before ~scopes pg_scrutinee
+              (transl_match ~scopes ~loc:pg_loc ~extra_cases pg_scrutinee
+                 [ guard_case ] pg_partial)
+          in
+          Matching.mk_guarded_rhs ~patch_guarded
+      | Total ->
+          (* Total pattern guards are equivalent to nested matches. *)
+          let nested_match =
+            transl_match ~scopes ~loc:pg_loc ~extra_cases:[] pg_scrutinee
+              [ guard_case ] pg_partial
+          in
+          Matching.mk_unguarded_rhs
+            (event_before ~scopes pg_scrutinee nested_match)
 
 and transl_case ~scopes {c_lhs; c_guard; c_rhs} =
   (c_lhs, transl_guard ~scopes c_guard c_rhs)
@@ -803,7 +842,7 @@ and transl_curried_function ~scopes loc return repr params body =
           let kind = value_kind pat.pat_env pat.pat_type in
           let body =
             Matching.for_function ~scopes param_loc None (Lvar param)
-              [ pat, body ]
+              [ pat, Matching.mk_unguarded_rhs body ]
               fp.fp_partial
           in
           body, (param, kind) :: params
@@ -1026,7 +1065,7 @@ and transl_record ~scopes loc env fields repres opt_init_expr =
     end
   end
 
-and transl_match ~scopes e arg pat_expr_list partial =
+and transl_match ~scopes ~loc ~extra_cases arg pat_expr_list partial =
   let rewrite_case (val_cases, exn_cases, static_handlers as acc)
         ({ c_lhs; c_guard; c_rhs } as case) =
     if c_rhs.exp_desc = Texp_unreachable then acc else
@@ -1066,13 +1105,13 @@ and transl_match ~scopes e arg pat_expr_list partial =
             ~always:(fun () ->
                 iter_exn_names Translprim.remove_exception_ident pe)
         in
-        (pv, static_raise vids) :: val_cases,
-        (pe, static_raise ids) :: exn_cases,
+        (pv, Matching.mk_unguarded_rhs (static_raise vids)) :: val_cases,
+        (pe, Matching.mk_unguarded_rhs (static_raise ids)) :: exn_cases,
         (lbl, ids_kinds, rhs) :: static_handlers
   in
   let val_cases, exn_cases, static_handlers =
     let x, y, z = List.fold_left rewrite_case ([], [], []) pat_expr_list in
-    List.rev x, List.rev y, List.rev z
+    List.rev_append x extra_cases, List.rev y, List.rev z
   in
   (* In presence of exception patterns, the code we generate for
 
@@ -1096,7 +1135,7 @@ and transl_match ~scopes e arg pat_expr_list partial =
     let static_exception_id = next_raise_count () in
     Lstaticcatch
       (Ltrywith (Lstaticraise (static_exception_id, scrutinees), id,
-                 Matching.for_trywith ~scopes e.exp_loc (Lvar id) exn_cases),
+                 Matching.for_trywith ~scopes loc (Lvar id) exn_cases),
        (static_exception_id, val_ids),
        handler)
   in
@@ -1104,7 +1143,7 @@ and transl_match ~scopes e arg pat_expr_list partial =
     match arg, exn_cases with
     | {exp_desc = Texp_tuple argl}, [] ->
       assert (static_handlers = []);
-      Matching.for_multiple_match ~scopes e.exp_loc
+      Matching.for_multiple_match ~scopes loc
         (transl_list ~scopes argl) val_cases partial
     | {exp_desc = Texp_tuple argl}, _ :: _ ->
         let val_ids =
@@ -1117,17 +1156,17 @@ and transl_match ~scopes e arg pat_expr_list partial =
         in
         let lvars = List.map (fun (id, _) -> Lvar id) val_ids in
         static_catch (transl_list ~scopes argl) val_ids
-          (Matching.for_multiple_match ~scopes e.exp_loc
+          (Matching.for_multiple_match ~scopes loc
              lvars val_cases partial)
     | arg, [] ->
       assert (static_handlers = []);
-      Matching.for_function ~scopes e.exp_loc
+      Matching.for_function ~scopes loc
         None (transl_exp ~scopes arg) val_cases partial
     | arg, _ :: _ ->
         let val_id = Typecore.name_pattern "val" (List.map fst val_cases) in
         let k = Typeopt.value_kind arg.exp_env arg.exp_type in
         static_catch [transl_exp ~scopes arg] [val_id, k]
-          (Matching.for_function ~scopes e.exp_loc
+          (Matching.for_function ~scopes loc
              None (Lvar val_id) val_cases partial)
   in
   List.fold_left (fun body (static_exception_id, val_ids, handler) ->

@@ -161,7 +161,14 @@ and 'k case =
 
 and guard =
   | Predicate of expression
-  | Pattern of expression * computation general_pattern
+  | Pattern of pattern_guard
+
+and pattern_guard =
+  { pg_scrutinee      : expression
+  ; pg_pattern        : computation general_pattern
+  ; pg_partial        : partial
+  ; pg_loc            : Location.t
+  }
 
 and function_param =
   {
