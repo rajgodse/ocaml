@@ -5769,10 +5769,14 @@ and type_cases
         let guard =
           match pc_guard with
           | None -> None
-          | Some scond ->
-            Some
-              (type_expect ext_env scond
-                (mk_expected ~explanation:When_guard Predef.type_bool))
+          | Some scond -> (
+              match scond with
+              | Guard_predicate pred ->
+                Some
+                  (type_expect ext_env pred
+                    (mk_expected ~explanation:When_guard Predef.type_bool))
+              | Guard_pattern _ -> (failwith "pattern guard typechecking unimplemented")
+          )
         in
         let exp =
           type_expect ext_env pc_rhs (mk_expected ?explanation ty_expected)
