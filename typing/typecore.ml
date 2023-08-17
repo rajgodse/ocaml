@@ -3481,8 +3481,8 @@ and type_expect_
         exp_env = env }
   | Pexp_match(sarg, caselist) ->
     let { arg; cases; partial } =
-      type_match sarg caselist env loc Check_and_warn_if_partial
-        ty_expected_explained
+      type_match ~require_value_case:true sarg caselist env loc
+        Check_and_warn_if_partial ty_expected_explained
     in
     re {
       exp_desc = Texp_match(arg, cases, partial);
@@ -3494,7 +3494,7 @@ and type_expect_
   | Pexp_try(sbody, caselist) ->
       let body = type_expect env sbody ty_expected_explained in
       let cases, _ =
-        type_cases Value env
+        type_cases Value ~require_value_case:true env
           Predef.type_exn ty_expected_explained Assume_partial loc caselist in
       re {
         exp_desc = Texp_try(body, cases);
@@ -4195,8 +4195,8 @@ and type_expect_
       let exp, ands = type_andops env slet.pbop_exp sands ty_andops in
       let scase = Ast_helper.Exp.case spat_params sbody in
       let cases, partial =
-        type_cases Value env ty_params (mk_expected ty_func_result)
-          Check_and_warn_if_partial loc [scase]
+        type_cases Value ~require_value_case:true env ty_params
+          (mk_expected ty_func_result) Check_and_warn_if_partial loc [scase]
       in
       let body =
         match cases with
@@ -4273,22 +4273,25 @@ and expression_constraint pexp =
     pattern guard. See the comments on [match_info] for the meaning of the
     returned type.
 
+   [require_value_case]: should [No_value_clauses] be raised if no value cases
+    are encountered?
    [sarg]: scrutinee to match against
    [caselist]: list of cases to match
+   [env]: environment at the match-like construct
    [loc]: location of the entire match-like construct
    [partiality_constraint]: should partiality of the cases be checked, and if
     so, what is the desired result? of type [partiality_constraint]
    [ty_expected_explained]: as in [type_expect]
 + *)
-and type_match sarg caselist env loc partiality_constraint
+and type_match ~require_value_case sarg caselist env loc partiality_constraint
       ty_expected_explained =
   let arg =
     with_local_level (fun () -> type_exp env sarg)
       ~post:(may_lower_contravariant_then_generalize env)
   in
   let cases, partial =
-    type_cases Computation env
-      arg.exp_type ty_expected_explained partiality_constraint loc caselist
+    type_cases Computation ~require_value_case env arg.exp_type
+      ty_expected_explained partiality_constraint loc caselist
   in
   if
     List.for_all (fun c -> pattern_needs_partial_application_check c.c_lhs)
@@ -4614,6 +4617,7 @@ and type_function
         (* Check everything else in the scope of the parameter. *)
         map_half_typed_cases Value env ty_arg_internal ty_res pat.ppat_loc
           ~partiality_constraint:Check_and_warn_if_partial
+          ~require_value_case:true
           (* We don't make use of [case_data] here so we pass unit. *)
           [ { pattern = pat; has_guard = false; needs_refute = false }, () ]
           ~type_body:begin
@@ -5570,9 +5574,11 @@ and map_half_typed_cases
         -> contains_gadt:_ (* whether the pattern contains a GADT *)
         -> ret)
     -> partiality_constraint:partiality_constraint
+    -> require_value_case:bool
     -> ret list * partial
   = fun ?additional_checks_for_split_cases
-    category env ty_arg ty_res loc caselist ~type_body ~partiality_constraint ->
+    category env ty_arg ty_res loc caselist ~type_body ~partiality_constraint
+    ~require_value_case ->
   (* ty_arg is _fully_ generalized *)
   let patterns = List.map (fun ((x : untyped_case), _) -> x.pattern) caselist in
   let contains_polyvars = List.exists contains_polymorphic_variant patterns in
@@ -5760,7 +5766,9 @@ and map_half_typed_cases
   in
   let val_cases = List.map fst val_cases_with_result in
   let exn_cases = List.map fst exn_cases_with_result in
-  if val_cases = [] && exn_cases <> [] then
+  (* Some match-like constructs (namely, pattern guards) need not contain a
+     value case, in which case [require_value_case] is set to [false]. *)
+  if require_value_case && val_cases = [] && exn_cases <> [] then
     raise (Error (loc, env, No_value_clauses));
   let partial = match partiality_constraint with
     | Assume_partial -> Partial
@@ -5798,9 +5806,9 @@ and map_half_typed_cases
 (* Typing of match cases *)
 and type_cases
     : type k . k pattern_category ->
-           _ -> _ -> _ -> _ -> _ -> Parsetree.case list ->
-           k case list * partial
-  = fun category env
+           require_value_case:_ -> _ -> _ -> _ -> _ -> _ ->
+           Parsetree.case list -> k case list * partial
+  = fun category ~require_value_case env
         ty_arg ty_res_explained partiality_constraint loc caselist ->
   let { ty = ty_res; explanation } = ty_res_explained in
   let caselist =
@@ -5812,6 +5820,7 @@ and type_cases
   *)
   map_half_typed_cases category env ty_arg ty_res loc caselist
     ~partiality_constraint
+    ~require_value_case
     ~type_body:begin
       fun { pc_guard; pc_rhs } pat ~ext_env ~ty_expected ~ty_infer
           ~contains_gadt:_ ->
@@ -5841,7 +5850,13 @@ and type_cases
                   { pgp_scrutinee = e; pgp_pattern = pat; pgp_loc = loc }) ->
                 let { arg; cases; partial; } =
                   type_match
-                    e [ { pc_lhs = pat; pc_guard = None; pc_rhs } ] ext_env loc
+                    (* Pattern guards containing no value cases will have an
+                       "Any" [_] case inserted during translation to handle the
+                       case where no cases match, so we can successfully
+                       typecheck such guards. Accordingly, [require_value_case]
+                       is set to [false] below. *)
+                    ~require_value_case:false e
+                    [ { pc_lhs = pat; pc_guard = None; pc_rhs } ] ext_env loc
                     Check_and_warn_if_total
                     (mk_expected ?explanation ty_expected)
                 in
@@ -5887,8 +5902,8 @@ and type_function_cases_expect
       split_function_ty env ty_expected ~arg_label:Nolabel ~first ~in_function
     in
     let cases, partial =
-      type_cases Value env ty_arg (mk_expected ty_res) Check_and_warn_if_partial
-        loc cases
+      type_cases Value ~require_value_case:true env ty_arg (mk_expected ty_res)
+        Check_and_warn_if_partial loc cases
     in
     let ty_fun =
       instance (newgenty (Tarrow (Nolabel, ty_arg, ty_res, commu_ok)))
