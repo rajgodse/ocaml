@@ -109,6 +109,7 @@ type t =
   | Unused_tmc_attribute                    (* 71 *)
   | Tmc_breaks_tailcall                     (* 72 *)
   | Generative_application_expects_unit     (* 73 *)
+  | Total_match_in_pattern_guard            (* 74 *)
 
 (* If you remove a warning, leave a hole in the numbering.  NEVER change
    the numbers of existing warnings.
@@ -190,12 +191,13 @@ let number = function
   | Unused_tmc_attribute -> 71
   | Tmc_breaks_tailcall -> 72
   | Generative_application_expects_unit -> 73
+  | Total_match_in_pattern_guard -> 74
 ;;
 (* DO NOT REMOVE the ;; above: it is used by
    the testsuite/ests/warnings/mnemonics.mll test to determine where
    the  definition of the number function above ends *)
 
-let last_warning_number = 73
+let last_warning_number = 74
 
 type description =
   { number : int;
@@ -534,6 +536,12 @@ let descriptions = [
     description = "A generative functor is applied to an empty structure \
                    (struct end) rather than to ().";
     since = since 5 1 };
+  { number = 74;
+    names = ["total-match-in-pattern-guard"];
+    description = "Cases in pattern guard are exhaustive, and so the pattern \
+                   guard can instead be expressed as a case whose body is an \
+                   exhaustive match.";
+    since = since 5 2 };
 ]
 
 let name_to_number =
@@ -1135,6 +1143,9 @@ let message = function
   | Generative_application_expects_unit ->
       "A generative functor\n\
        should be applied to '()'; using '(struct end)' is deprecated."
+  | Total_match_in_pattern_guard ->
+      "This pattern guard matches exhaustively. Consider rewriting the guard \
+       as a nested match."
 ;;
 
 let nerrors = ref 0

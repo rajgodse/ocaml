@@ -588,9 +588,10 @@ and transl_guard ~scopes guard rhs =
   let expr = event_before ~scopes rhs (transl_exp ~scopes rhs) in
   match guard with
   | None -> expr
-  | Some cond ->
-      event_before ~scopes cond
-        (Lifthenelse(transl_exp ~scopes cond, expr, staticfail))
+  | Some (Predicate cond) ->
+       event_before ~scopes cond
+         (Lifthenelse(transl_exp ~scopes cond, expr, staticfail))
+  | Some (Pattern _) -> failwith "guard pattern translation unimplemented"
 
 and transl_case ~scopes {c_lhs; c_guard; c_rhs} =
   (c_lhs, transl_guard ~scopes c_guard c_rhs)

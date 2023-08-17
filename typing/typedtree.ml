@@ -153,11 +153,15 @@ and meth =
   | Tmeth_ancestor of Ident.t * Path.t
 
 and 'k case =
-    {
-     c_lhs: 'k general_pattern;
-     c_guard: expression option;
-     c_rhs: expression;
-    }
+  {
+    c_lhs: 'k general_pattern;
+    c_guard: guard option;
+    c_rhs: expression;
+  }
+
+and guard =
+  | Predicate of expression
+  | Pattern of expression * computation general_pattern
 
 and function_param =
   {

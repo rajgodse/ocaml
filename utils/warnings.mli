@@ -112,6 +112,7 @@ type t =
   | Unused_tmc_attribute                    (* 71 *)
   | Tmc_breaks_tailcall                     (* 72 *)
   | Generative_application_expects_unit     (* 73 *)
+  | Total_match_in_pattern_guard            (* 74 *)
 
 type alert = {kind:string; message:string; def:loc; use:loc}
 

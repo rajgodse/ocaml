@@ -115,8 +115,8 @@ val pressure_variants_in_computation_pattern:
     [refute] indicates that [check_unused] was called on a refutation clause.
  *)
 val check_partial:
-    (pattern -> pattern option) -> Location.t -> value typed_case list
-    -> partial
+    (pattern -> pattern option) -> warn_if:partial -> Location.t
+    -> value typed_case list -> partial
 
 val check_unused:
     (bool -> pattern -> pattern option) -> value typed_case list -> unit

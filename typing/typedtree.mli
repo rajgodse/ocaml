@@ -289,9 +289,18 @@ and meth =
 and 'k case =
     {
      c_lhs: 'k general_pattern;
-     c_guard: expression option;
+     c_guard: guard option;
      c_rhs: expression;
     }
+
+(* CR-soon rgodse: Rename these constructors to [Guard_predicate] and
+   [Guard_pattern] *)
+and guard =
+  | Predicate of expression
+  | Pattern of expression * computation general_pattern
+  (* [Pattern (scrutinee, pattern)] represents a pattern guard. The case will
+     be taken if [scrutinee] evaluates to a value matching [pattern]. Variables
+     bound by the pattern match are available on the RHS of the case. *)
 
 and function_param =
   {
