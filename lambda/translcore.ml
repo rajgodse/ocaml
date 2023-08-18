@@ -586,15 +586,23 @@ and transl_list_with_shape ~scopes expr_list =
   List.split (List.map transl_with_shape expr_list)
 
 and transl_guard ~scopes guard rhs =
-  let expr = event_before ~scopes rhs (transl_exp ~scopes rhs) in
   match guard with
-  | None -> Matching.mk_unguarded_rhs expr
+  | None ->
+      Matching.mk_unguarded_rhs
+        (event_before ~scopes rhs (transl_exp ~scopes rhs))
   | Some (Predicate cond) ->
-      let patch_guarded ~patch =
-        event_before ~scopes cond
-          (Lifthenelse(transl_exp ~scopes cond, expr, patch))
-      in
-      Matching.mk_guarded_rhs ~patch_guarded
+    let translated_cond = transl_exp ~scopes cond in
+    let translated_rhs = event_before ~scopes rhs (transl_exp ~scopes rhs) in
+    let patch_guarded ~patch =
+      event_before ~scopes cond
+        (Lifthenelse (translated_cond, translated_rhs, patch))
+    in
+    let free_variables =
+      Ident.Set.union
+        (free_variables translated_cond)
+        (free_variables translated_rhs)
+    in
+    Matching.mk_boolean_guarded_rhs ~patch_guarded ~free_variables
   | Some (Pattern { pg_scrutinee; pg_pattern; pg_partial; pg_loc }) ->
       let guard_case : _ case =
         { c_lhs = pg_pattern
@@ -622,7 +630,7 @@ and transl_guard ~scopes guard rhs =
               (transl_match ~scopes ~loc:pg_loc ~extra_cases pg_scrutinee
                  [ guard_case ] pg_partial)
           in
-          Matching.mk_guarded_rhs ~patch_guarded
+          Matching.mk_pattern_guarded_rhs ~patch_guarded
       | Total ->
           (* Total pattern guards are equivalent to nested matches. *)
           let nested_match =
