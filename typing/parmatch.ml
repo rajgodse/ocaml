@@ -32,10 +32,20 @@ let typed_case { c_lhs; c_guard; c_rhs } =
     needs_refute = (c_rhs.exp_desc = Texp_unreachable);
   }
 
-let untyped_case { Parsetree.pc_lhs; pc_guard; pc_rhs } =
+let untyped_case { Parsetree.pc_lhs; pc_rhs } =
+  let has_guard =
+    match pc_rhs with
+    | Psimple_rhs _ -> false
+    | Pboolean_guarded_rhs _ | Ppattern_guarded_rhs _ -> true
+  in
+  let needs_refute =
+    match pc_rhs with
+    | Psimple_rhs { pexp_desc=Pexp_unreachable; _ } -> true
+    | Psimple_rhs _ | Pboolean_guarded_rhs _ | Ppattern_guarded_rhs _ -> false
+  in
   { pattern = pc_lhs;
-    has_guard = Option.is_some pc_guard;
-    needs_refute = (pc_rhs.pexp_desc = Parsetree.Pexp_unreachable);
+    has_guard;
+    needs_refute;
   }
 
 (*************************************)
@@ -1885,8 +1895,11 @@ let do_check_partial pred ~warn_if loc casel pss = match pss with
     begin match casel with
     | [] -> ()
     | _  ->
-      if Warnings.is_active Warnings.All_clauses_guarded then
-        Location.prerr_warning loc Warnings.All_clauses_guarded
+      (match warn_if with
+       | Partial ->
+           if Warnings.is_active Warnings.All_clauses_guarded then
+             Location.prerr_warning loc Warnings.All_clauses_guarded;
+       | Total -> ())
     end ;
     Partial
 | ps::_  ->

@@ -7473,3 +7473,34 @@ module M = struct
     inherit \#val \#let as \#mutable
   end
 end
+
+(* Pattern guards *)
+let f g x = function
+  | A x when g x match B y -> y
+  | _ -> x
+
+let f g h j x = function
+  | A x
+      when g x match B y
+      when h y match C z
+      when j z match D a ->
+      a
+  | _ -> x
+;;
+
+let f g = function
+  | A x when g x match (
+    | A y when g y match (
+      | A z -> z
+      | B z -> z
+      )
+    | B y when g y match (
+      | A z -> z
+      | B z -> z
+      )
+    )
+  | B x when g x match (
+    | A y when g y match A z -> z
+    | B y when g y match A z -> z
+    )
+  | C x -> x

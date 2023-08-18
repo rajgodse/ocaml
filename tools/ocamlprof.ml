@@ -144,12 +144,9 @@ let final_rewrite add_function =
     close_out !outchan;
   *)
 
-type case =
-  { rhs : expression;
-    guard : guard option;
-  }
+type case = { rhs : case_rhs }
 
-let case { pc_rhs; pc_guard } = { rhs = pc_rhs; guard = pc_guard }
+let case { pc_rhs; _ } = { rhs = pc_rhs }
 
 let rec rewrite_patexp_list iflag l =
   rewrite_exp_list iflag (List.map (fun x -> x.pvb_expr) l)
@@ -157,17 +154,16 @@ let rec rewrite_patexp_list iflag l =
 and rewrite_cases iflag l =
   List.iter
     (fun pc ->
-      begin match pc.pc_guard with
-      | None -> ()
-      | Some g -> rewrite_guard iflag g
-      end;
-      rewrite_exp iflag pc.pc_rhs
+       match pc.pc_rhs with
+       | Psimple_rhs e -> rewrite_exp iflag e
+       | Pboolean_guarded_rhs { pbg_guard; pbg_rhs } ->
+           rewrite_exp iflag pbg_guard;
+           rewrite_exp iflag pbg_rhs
+       | Ppattern_guarded_rhs { ppg_scrutinee; ppg_cases; ppg_loc = _ } ->
+           rewrite_exp iflag ppg_scrutinee;
+           rewrite_cases iflag ppg_cases
     )
     l
-
-and rewrite_guard iflag = function
-| Guard_predicate e -> rewrite_exp iflag e
-| Guard_pattern gp -> rewrite_exp iflag gp.pgp_scrutinee
 
 and rewrite_labelexp_list iflag l =
   rewrite_exp_list iflag (List.map snd l)
@@ -190,7 +186,7 @@ and rw_exp iflag sexp =
 
   | Pexp_function (_, _, Pfunction_body e) ->
     if !instr_fun then
-      rewrite_function iflag [{ rhs = e; guard = None }]
+      rewrite_function iflag [{ rhs = Psimple_rhs e }]
     else
       rewrite_exp iflag e
 
@@ -320,19 +316,21 @@ and rewrite_ifbody iflag ghost sifbody =
 and rewrite_annotate_exp_list l =
   List.iter
     (function
-     | {guard=Some guard; rhs=sbody} ->
-         rewrite_guard true guard;
-         insert_profile rw_exp sbody;
-     | {rhs={pexp_desc = Pexp_constraint(sbody, _)}} (* let f x : t = e *)
-        -> insert_profile rw_exp sbody
-     | {rhs=sexp} -> insert_profile rw_exp sexp)
+     | {rhs=Pboolean_guarded_rhs { pbg_guard; pbg_rhs }} ->
+         rewrite_exp true pbg_guard;
+         insert_profile rw_exp pbg_rhs;
+     | {rhs=Ppattern_guarded_rhs { ppg_scrutinee; ppg_cases; _ }} ->
+         rewrite_exp true ppg_scrutinee;
+         rewrite_annotate_exp_list (List.map case ppg_cases)
+     | {rhs=Psimple_rhs {pexp_desc = Pexp_constraint(sbody, _)}}
+       (* let f x : t = e *)
+       -> insert_profile rw_exp sbody
+     | {rhs=Psimple_rhs sexp} -> insert_profile rw_exp sexp)
     l
 
 and rewrite_function iflag = function
-  | [{guard=None;
-      rhs={pexp_desc = (Pexp_function _)} as sexp}]
-    ->
-        rewrite_exp iflag sexp
+  | [{rhs=Psimple_rhs ({pexp_desc = (Pexp_function _)} as sexp)}] ->
+      rewrite_exp iflag sexp
   | l -> rewrite_funmatching l
 
 and rewrite_funmatching l =

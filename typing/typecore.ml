@@ -2718,7 +2718,7 @@ let rec type_approx env sexp =
     Pexp_let (_, _, e) -> type_approx env e
   | Pexp_function (params, c, body) ->
       type_approx_function env params c body ~loc
-  | Pexp_match (_, {pc_rhs=e}::_) -> type_approx env e
+  | Pexp_match (_, {pc_rhs=rhs}::_) -> type_approx_case_rhs env rhs
   | Pexp_try (e, _) -> type_approx env e
   | Pexp_tuple l -> newty (Ttuple(List.map (type_approx env) l))
   | Pexp_ifthenelse (_,e,_) -> type_approx env e
@@ -2746,12 +2746,24 @@ and type_approx_function env params c body ~loc =
       match body with
       | Pfunction_body body ->
           type_approx env body
-      | Pfunction_cases ({pc_rhs = e} :: _, _, _) ->
-          newty (Tarrow (Nolabel, newvar (), type_approx env e, commu_ok))
+      | Pfunction_cases ({pc_rhs = rhs} :: _, _, _) ->
+          newty
+            (Tarrow
+               ( Nolabel
+               , newvar ()
+               , type_approx_case_rhs env rhs
+               , commu_ok))
       | Pfunction_cases ([], _, _) ->
           newvar ()
     in
     type_approx_constraint_opt env body_ty c ~loc
+
+and type_approx_case_rhs env = function
+  | Psimple_rhs e | Pboolean_guarded_rhs { pbg_rhs = e; _ } -> type_approx env e
+  | Ppattern_guarded_rhs { ppg_cases = { pc_rhs = rhs; _ } :: _; _ } ->
+      type_approx_case_rhs env rhs
+  | Ppattern_guarded_rhs { ppg_cases = [] } ->
+      fatal_error "Typecore.type_approx_case_rhs"
 
 (* List labels in a function type, and whether return type is a variable *)
 let rec list_labels_aux env visited ls ty_fun =
@@ -3304,7 +3316,10 @@ and type_expect_
       let sval = vb_exp_constraint vb in
       type_expect env
         {sexp with
-         pexp_desc = Pexp_match (sval, [Ast_helper.Exp.case spat sbody])}
+         pexp_desc =
+           Pexp_match
+             ( sval
+             , [Ast_helper.Exp.case spat (Ast_helper.Case_rhs.simple sbody)])}
         ty_expected_explained
   | Pexp_let(rec_flag, spat_sexp_list, sbody) ->
       let existential_context =
@@ -4193,7 +4208,9 @@ and type_expect_
         end
       in
       let exp, ands = type_andops env slet.pbop_exp sands ty_andops in
-      let scase = Ast_helper.Exp.case spat_params sbody in
+      let scase =
+        Ast_helper.Exp.case spat_params (Ast_helper.Case_rhs.simple sbody)
+      in
       let cases, partial =
         type_cases Value ~require_value_case:true env ty_params
           (mk_expected ty_func_result) Check_and_warn_if_partial loc [scase]
@@ -5822,56 +5839,54 @@ and type_cases
     ~partiality_constraint
     ~require_value_case
     ~type_body:begin
-      fun { pc_guard; pc_rhs } pat ~ext_env ~ty_expected ~ty_infer
-          ~contains_gadt:_ ->
+      fun { pc_rhs } pat ~ext_env ~ty_expected ~ty_infer ~contains_gadt:_ ->
         let guard, exp =
-          match pc_guard with
-            | None | Some (Guard_predicate _) ->
-                let guard =
-                  match pc_guard with
-                  (* This case is unreachable, as [pc_guard] cannot match the
-                     outer pattern while also matching [Some (Guard_pattern _)]
-                   *)
-                  | Some (Guard_pattern _) -> assert false
-                  | None -> None
-                  | Some (Guard_predicate pred) ->
-                      let expected_bool =
-                        mk_expected ~explanation:When_guard Predef.type_bool
-                      in
-                      Some (Predicate (type_expect ext_env pred expected_bool))
-                in
-                let exp =
-                  type_expect
-                    ext_env pc_rhs (mk_expected ?explanation ty_expected)
-                in
-                guard, exp
-            | Some
-                (Guard_pattern
-                  { pgp_scrutinee = e; pgp_pattern = pat; pgp_loc = loc }) ->
-                let { arg; cases; partial; } =
-                  type_match
-                    (* Pattern guards containing no value cases will have an
-                       "Any" [_] case inserted during translation to handle the
-                       case where no cases match, so we can successfully
-                       typecheck such guards. Accordingly, [require_value_case]
-                       is set to [false] below. *)
-                    ~require_value_case:false e
-                    [ { pc_lhs = pat; pc_guard = None; pc_rhs } ] ext_env loc
-                    Check_and_warn_if_total
-                    (mk_expected ?explanation ty_expected)
-                in
-                (match cases with
-                  | [ { c_lhs = pat; c_guard = None; c_rhs = exp } ] ->
-                      let pattern_guard : Typedtree.guard =
-                        Pattern
-                           { pg_scrutinee = arg
-                           ; pg_pattern = pat
-                           ; pg_partial = partial
-                           ; pg_loc = loc }
-                      in
-                      Some pattern_guard, exp
-                  | _ ->
-                      Misc.fatal_error "type_cases invariant violated")
+          match pc_rhs with
+          | Psimple_rhs rhs | Pboolean_guarded_rhs { pbg_rhs = rhs; _ } ->
+              let guard =
+                match pc_rhs with
+                (* This case is unreachable, as [pc_rhs] cannot match the
+                   outer pattern while also matching [Ppattern_guarded_rhs _]
+                 *)
+                | Ppattern_guarded_rhs _ -> assert false
+                | Psimple_rhs _ -> None
+                | Pboolean_guarded_rhs { pbg_guard; _ } ->
+                    let expected_bool =
+                      mk_expected ~explanation:When_guard Predef.type_bool
+                    in
+                    let typed_guard =
+                      type_expect ext_env pbg_guard expected_bool
+                    in
+                    Some (Predicate typed_guard)
+              in
+              let exp =
+                type_expect ext_env rhs (mk_expected ?explanation ty_expected)
+              in
+              guard, exp
+          | Ppattern_guarded_rhs { ppg_scrutinee; ppg_cases; ppg_loc = loc } ->
+              let { arg; cases; partial; } =
+                type_match
+                  (* Pattern guards containing no value cases will have an
+                     "Any" [_] case inserted during translation to handle the
+                     case where no cases match, so we can successfully
+                     typecheck such guards. Accordingly, [require_value_case]
+                     is set to [false] below. *)
+                  ~require_value_case:false ppg_scrutinee ppg_cases ext_env loc
+                  Check_and_warn_if_total (mk_expected ?explanation ty_expected)
+              in
+              match cases with
+              | [ { c_lhs = pat; c_guard = None; c_rhs = exp } ] ->
+                  let pattern_guard : Typedtree.guard =
+                    Pattern
+                      { pg_scrutinee = arg
+                      ; pg_pattern = pat
+                      ; pg_partial = partial
+                      ; pg_loc = loc }
+                  in
+                  Some pattern_guard, exp
+              | _ ->
+                  fatal_error
+                    "typechecking for multicase pattern guards unimplemented"
         in
         {
           c_lhs = pat;
