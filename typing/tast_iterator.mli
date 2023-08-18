@@ -26,6 +26,7 @@ type iterator =
     attributes: iterator -> attributes -> unit;
     binding_op: iterator -> binding_op -> unit;
     case: 'k . iterator -> 'k case -> unit;
+    case_rhs: iterator -> case_rhs -> unit;
     class_declaration: iterator -> class_declaration -> unit;
     class_description: iterator -> class_description -> unit;
     class_expr: iterator -> class_expr -> unit;
@@ -38,7 +39,6 @@ type iterator =
     env: iterator -> Env.t -> unit;
     expr: iterator -> expression -> unit;
     extension_constructor: iterator -> extension_constructor -> unit;
-    guard: iterator -> guard -> unit;
     location: iterator -> Location.t -> unit;
     module_binding: iterator -> module_binding -> unit;
     module_coercion: iterator -> module_coercion -> unit;

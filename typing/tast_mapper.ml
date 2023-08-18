@@ -25,6 +25,7 @@ type mapper =
     attributes : mapper -> attributes -> attributes;
     binding_op: mapper -> binding_op -> binding_op;
     case: 'k . mapper -> 'k case -> 'k case;
+    case_rhs: mapper -> case_rhs -> case_rhs;
     class_declaration: mapper -> class_declaration -> class_declaration;
     class_description: mapper -> class_description -> class_description;
     class_expr: mapper -> class_expr -> class_expr;
@@ -39,7 +40,6 @@ type mapper =
     expr: mapper -> expression -> expression;
     extension_constructor: mapper -> extension_constructor ->
       extension_constructor;
-    guard: mapper -> guard -> guard;
     location: mapper -> Location.t -> Location.t;
     module_binding: mapper -> module_binding -> module_binding;
     module_coercion: mapper -> module_coercion -> module_coercion;
@@ -843,21 +843,27 @@ let value_bindings sub (rec_flag, list) =
 
 let case
   : type k . mapper -> k case -> k case
-  = fun sub {c_lhs; c_guard; c_rhs} ->
+  = fun sub {c_lhs; c_rhs} ->
   {
     c_lhs = sub.pat sub c_lhs;
-    c_guard = Option.map (sub.guard sub) c_guard;
-    c_rhs = sub.expr sub c_rhs;
+    c_rhs = sub.case_rhs sub c_rhs;
   }
 
-let guard sub = function
-  | Predicate p -> Predicate (sub.expr sub p)
-  | Pattern { pg_scrutinee; pg_pattern; pg_partial; pg_loc; } ->
-      Pattern
+let case_rhs sub = function
+  | Simple_rhs e -> Simple_rhs (sub.expr sub e)
+  | Boolean_guarded_rhs { bg_guard; bg_rhs } ->
+      Boolean_guarded_rhs
+        { bg_guard = sub.expr sub bg_guard; bg_rhs = sub.expr sub bg_rhs }
+  | Pattern_guarded_rhs { pg_scrutinee; pg_cases; pg_partial; pg_loc; pg_env;
+                          pg_type } ->
+      Pattern_guarded_rhs
         { pg_scrutinee = sub.expr sub pg_scrutinee
-        ; pg_pattern = sub.pat sub pg_pattern
+        ; pg_cases = List.map (case sub) pg_cases
         ; pg_partial
-        ; pg_loc }
+        ; pg_loc = sub.location sub pg_loc
+        ; pg_env = sub.env sub pg_env
+        ; pg_type
+        }
 
 let value_binding sub x =
   let vb_loc = sub.location sub x.vb_loc in
@@ -874,6 +880,7 @@ let default =
     attributes;
     binding_op;
     case;
+    case_rhs;
     class_declaration;
     class_description;
     class_expr;
@@ -886,7 +893,6 @@ let default =
     env;
     expr;
     extension_constructor;
-    guard;
     location;
     module_binding;
     module_coercion;

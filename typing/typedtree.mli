@@ -289,27 +289,38 @@ and meth =
 and 'k case =
     {
      c_lhs: 'k general_pattern;
-     c_guard: guard option;
-     c_rhs: expression;
+     c_rhs: case_rhs;
     }
 
-(* CR-soon rgodse: Rename these constructors to [Guard_predicate] and
-   [Guard_pattern] *)
-and guard =
-  | Predicate of expression
-  | Pattern of pattern_guard
-  (* [Pattern (scrutinee, pattern, partial)] represents a pattern guard.
-     The case will be taken if [scrutinee] evaluates to a value matching
-     [pattern]. Variables bound by the pattern match are available on the RHS of
-     the case. Like the [Texp_match] constructor,  [partial] denotes whether the
-     case matches the scrutinee partially or totally. *)
+and case_rhs =
+  | Simple_rhs of expression
+  | Boolean_guarded_rhs of { bg_guard : expression; bg_rhs : expression }
+  | Pattern_guarded_rhs of
+      { pg_scrutinee : expression
+      ; pg_cases : computation case list
+      ; pg_partial : partial
+      ; pg_loc : Location.t
+      ; pg_env : Env.t
+      ; pg_type : Types.type_expr
+      }
+  (* [Pattern_guarded_rhs { pg_scrutinee; pg_cases; pg_partial; pg_partial;
+                            pg_loc; pg_env; pg_type } ]
+     represents a pattern guard case right-hand side.
 
-and pattern_guard =
-  { pg_scrutinee      : expression
-  ; pg_pattern        : computation general_pattern
-  ; pg_partial        : partial
-  ; pg_loc            : Location.t
-  }
+     [pg_env] contains the bindings available prior to the evaluation of the
+     pattern guard scrutinee, as in a match expression. These bindings are
+     available in all pattern guard cases.
+
+     The cases in [pg_cases] are checked in order: a given case will be taken if
+     [pg_scrutinee] evaluates to a value matching the pattern of that case. Each
+     case's rhs has access to the bindings in [pg_env], together with the
+     bindings in its own pattern.
+
+     Like the [Texp_match] constructor, [pg_partial] denotes whether the case
+     matches the scrutinee partially or totally.
+
+     [pg_loc] contains the source location of the guarded rhs, and [pg_type] is
+     the type returned by all cases of the pattern guard. *)
 
 and function_param =
   {
@@ -896,3 +907,5 @@ val split_pattern:
 (** Whether an expression looks nice as the subject of a sentence in a error
     message. *)
 val exp_is_nominal : expression -> bool
+
+val is_guarded_rhs: case_rhs -> bool

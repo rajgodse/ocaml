@@ -26,10 +26,20 @@ type 'pattern parmatch_case =
     needs_refute : bool;
   }
 
-let typed_case { c_lhs; c_guard; c_rhs } =
+let typed_case { c_lhs; c_rhs } =
+  let has_guard =
+    match c_rhs with
+    | Simple_rhs _ -> false
+    | Boolean_guarded_rhs _ | Pattern_guarded_rhs _ -> true
+  in
+  let needs_refute =
+    match c_rhs with
+    | Simple_rhs { exp_desc = Texp_unreachable; _ } -> true
+    | Simple_rhs _ | Boolean_guarded_rhs _ | Pattern_guarded_rhs _ -> false
+  in
   { pattern = c_lhs;
-    has_guard = Option.is_some c_guard;
-    needs_refute = (c_rhs.exp_desc = Texp_unreachable);
+    has_guard;
+    needs_refute;
   }
 
 let untyped_case { Parsetree.pc_lhs; pc_rhs } =
@@ -2355,15 +2365,9 @@ let pattern_stable_vars ns p =
     (List.fold_left (fun m n -> Negative n :: m)
        [Positive {varsets = []; row = [p]}] ns)
 
-(* All identifier paths that appear in an expression that occurs
-   as a clause right hand side or guard.
-*)
+(* All identifier paths that appear in a case rhs's guard. *)
 
-let all_rhs_idents guard =
-  let exp = match guard with
-    | Predicate p -> p
-    | Pattern { pg_scrutinee; _ } -> pg_scrutinee
-  in
+let all_guard_idents c_rhs =
   let ids = ref Ident.Set.empty in
   let open Tast_iterator in
   let expr_iter iter exp =
@@ -2374,7 +2378,14 @@ let all_rhs_idents guard =
     | _ -> Tast_iterator.default_iterator.expr iter exp
   in
   let iterator = {Tast_iterator.default_iterator with expr = expr_iter} in
-  iterator.expr iterator exp;
+  let rec rhs_iter = function
+    | Simple_rhs _ -> ()
+    | Boolean_guarded_rhs { bg_guard; _ } -> iterator.expr iterator bg_guard
+    | Pattern_guarded_rhs { pg_scrutinee; pg_cases; _ } ->
+        iterator.expr iterator pg_scrutinee;
+        List.iter (fun case -> rhs_iter case.c_rhs) pg_cases
+  in
+  rhs_iter c_rhs;
   !ids
 
 let check_ambiguous_bindings =
@@ -2383,10 +2394,12 @@ let check_ambiguous_bindings =
   fun cases ->
     if is_active warn0 then
       let check_case ns case = match case with
-        | { c_lhs = p; c_guard=None ; _} -> [p]::ns
-        | { c_lhs = p; c_guard=Some g; _} ->
+        | { c_lhs = p; c_rhs = Simple_rhs _ } -> [p]::ns
+        | { c_lhs = p
+          ; c_rhs = Boolean_guarded_rhs _ | Pattern_guarded_rhs _ as c_rhs
+          } ->
             let all =
-              Ident.Set.inter (pattern_vars p) (all_rhs_idents g) in
+              Ident.Set.inter (pattern_vars p) (all_guard_idents c_rhs) in
             if not (Ident.Set.is_empty all) then begin
               match pattern_stable_vars ns p with
               | All -> ()

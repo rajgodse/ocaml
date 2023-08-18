@@ -89,17 +89,27 @@ let event_before ~scopes exp lam =
 let event_after ~scopes exp lam =
   Translprim.event_after (of_location ~scopes exp.exp_loc) exp lam
 
-let event_function ~scopes exp lam =
+let event_function ~scopes loc env lam =
   if !Clflags.debug && not !Clflags.native_code then
     let repr = Some (ref 0) in
     let (info, body) = lam repr in
     (info,
-     Levent(body, {lev_loc = of_location ~scopes exp.exp_loc;
+     Levent(body, {lev_loc = of_location ~scopes loc;
                    lev_kind = Lev_function;
                    lev_repr = repr;
-                   lev_env = exp.exp_env}))
+                   lev_env = env}))
   else
     lam None
+
+let event_function_expr ~scopes exp lam =
+  event_function ~scopes exp.exp_loc exp.exp_env lam
+
+let event_function_rhs ~scopes rhs lam =
+  match rhs with
+  | Simple_rhs rhs_exp | Boolean_guarded_rhs { bg_rhs = rhs_exp; _ } ->
+      event_function_expr ~scopes rhs_exp lam
+  | Pattern_guarded_rhs { pg_loc; pg_env; _ } ->
+      event_function ~scopes pg_loc pg_env lam
 
 (* Assertions *)
 
@@ -167,6 +177,10 @@ let transl_ident loc env ty path desc =
   | Val_reg | Val_self _ ->
       transl_value_path loc env path
   |  _ -> fatal_error "Translcore.transl_exp: bad Texp_ident"
+
+let is_rhs_unreachable = function
+  | Simple_rhs { exp_desc = Texp_unreachable; _ } -> true
+  | _ -> false
 
 let rec transl_exp ~scopes e =
   transl_exp1 ~scopes ~in_new_scope:false e
@@ -585,35 +599,28 @@ and transl_list_with_shape ~scopes expr_list =
   in
   List.split (List.map transl_with_shape expr_list)
 
-and transl_guard ~scopes guard rhs =
-  match guard with
-  | None ->
+and transl_rhs ~scopes rhs =
+  match rhs with
+  | Simple_rhs rhs ->
       Matching.mk_unguarded_rhs
         (event_before ~scopes rhs (transl_exp ~scopes rhs))
-  | Some (Predicate cond) ->
-    let translated_cond = transl_exp ~scopes cond in
-    let translated_rhs = event_before ~scopes rhs (transl_exp ~scopes rhs) in
-    let patch_guarded ~patch =
-      event_before ~scopes cond
-        (Lifthenelse (translated_cond, translated_rhs, patch))
-    in
-    let free_variables =
-      Ident.Set.union
-        (free_variables translated_cond)
-        (free_variables translated_rhs)
-    in
-    Matching.mk_boolean_guarded_rhs ~patch_guarded ~free_variables
-  | Some (Pattern { pg_scrutinee; pg_pattern; pg_partial; pg_loc }) ->
-      let guard_case : _ case =
-        { c_lhs = pg_pattern
-        ; c_guard = None
-        ; c_rhs = rhs }
+  | Boolean_guarded_rhs { bg_guard; bg_rhs } ->
+      let guard = transl_exp ~scopes bg_guard in
+      let body = event_before ~scopes bg_rhs (transl_exp ~scopes bg_rhs) in
+      let patch_guarded ~patch =
+        event_before ~scopes bg_guard (Lifthenelse (guard, body, patch))
       in
+      let free_variables =
+        Ident.Set.union (free_variables guard) (free_variables body)
+      in
+      Matching.mk_boolean_guarded_rhs ~patch_guarded ~free_variables
+  | Pattern_guarded_rhs { pg_scrutinee; pg_cases; pg_partial; pg_loc; pg_env;
+                          pg_type=_ } ->
       match pg_partial with
       | Partial ->
           (* Partial pattern guards may fail to match, so we must construct a
-             guarded rhs from a continuation that patches in the code to execute
-             on match failure.
+             guarded rhs from a continuation that later "patches" in the code to
+             execute on match failure.
           *)
           let patch_guarded ~patch =
             let any_pat : pattern =
@@ -621,51 +628,49 @@ and transl_guard ~scopes guard rhs =
               ; pat_loc = Location.none
               ; pat_extra = []
               ; pat_type = pg_scrutinee.exp_type
-              ; pat_env = Env.empty
+              ; pat_env = pg_env
               ; pat_attributes = []
               }
             in
             let extra_cases = [ any_pat, Matching.mk_unguarded_rhs patch ] in
             event_before ~scopes pg_scrutinee
               (transl_match ~scopes ~loc:pg_loc ~extra_cases pg_scrutinee
-                 [ guard_case ] pg_partial)
+                 pg_cases pg_partial)
           in
           Matching.mk_pattern_guarded_rhs ~patch_guarded
       | Total ->
           (* Total pattern guards are equivalent to nested matches. *)
           let nested_match =
             transl_match ~scopes ~loc:pg_loc ~extra_cases:[] pg_scrutinee
-              [ guard_case ] pg_partial
+              pg_cases pg_partial
           in
           Matching.mk_unguarded_rhs
             (event_before ~scopes pg_scrutinee nested_match)
 
-and transl_case ~scopes {c_lhs; c_guard; c_rhs} =
-  (c_lhs, transl_guard ~scopes c_guard c_rhs)
+and transl_case ~scopes {c_lhs; c_rhs} = c_lhs, transl_rhs ~scopes c_rhs
 
 and transl_cases ~scopes cases =
-  let cases =
-    List.filter (fun c -> c.c_rhs.exp_desc <> Texp_unreachable) cases in
+  let cases = List.filter (fun c -> not (is_rhs_unreachable c.c_rhs)) cases in
   List.map (transl_case ~scopes) cases
 
-and transl_case_try ~scopes {c_lhs; c_guard; c_rhs} =
+and transl_case_try ~scopes {c_lhs; c_rhs} =
   iter_exn_names Translprim.add_exception_ident c_lhs;
   Misc.try_finally
-    (fun () -> c_lhs, transl_guard ~scopes c_guard c_rhs)
+    (fun () -> c_lhs, transl_rhs ~scopes c_rhs)
     ~always:(fun () ->
         iter_exn_names Translprim.remove_exception_ident c_lhs)
 
 and transl_cases_try ~scopes cases =
-  let cases =
-    List.filter (fun c -> c.c_rhs.exp_desc <> Texp_unreachable) cases in
+  let cases = List.filter (fun c -> not (is_rhs_unreachable c.c_rhs)) cases in
   List.map (transl_case_try ~scopes) cases
 
-and transl_tupled_cases ~scopes patl_expr_list =
-  let patl_expr_list =
-    List.filter (fun (_,_,e) -> e.exp_desc <> Texp_unreachable)
-      patl_expr_list in
-  List.map (fun (patl, guard, expr) -> (patl, transl_guard ~scopes guard expr))
-    patl_expr_list
+and transl_tupled_cases ~scopes patl_rhs_list =
+  let patl_rhs_list =
+    List.filter (fun (_, rhs) -> not (is_rhs_unreachable rhs)) patl_rhs_list
+  in
+  List.map
+    (fun (patl, rhs) -> (patl, transl_rhs ~scopes rhs))
+    patl_rhs_list
 
 and transl_apply ~scopes
       ?(tailcall=Default_tailcall)
@@ -757,8 +762,15 @@ and transl_function_without_attributes ~scopes loc repr params body =
     match body with
     | Tfunction_body body ->
         value_kind body.exp_env body.exp_type
-    | Tfunction_cases { cases = { c_rhs } :: _ } ->
-        value_kind c_rhs.exp_env c_rhs.exp_type
+    | Tfunction_cases
+        { cases =
+            { c_rhs = Simple_rhs e | Boolean_guarded_rhs { bg_rhs = e; _ } }
+            :: _ } ->
+        value_kind e.exp_env e.exp_type
+    | Tfunction_cases
+        { cases =
+            { c_rhs = Pattern_guarded_rhs { pg_env; pg_type; _ } } :: _ } ->
+        value_kind pg_env pg_type
     | Tfunction_cases { cases = [] } ->
         (* With Camlp4/ppx, a pattern matching might be empty *)
         Pgenval
@@ -772,7 +784,7 @@ and transl_tupled_function ~scopes loc return repr params body =
     | [], Tfunction_cases { cases; partial } ->
         Some (cases, partial)
     | [ { fp_kind = Tparam_pat pat; fp_partial } ], Tfunction_body body ->
-        let case = { c_lhs = pat; c_guard = None; c_rhs = body } in
+        let case = { c_lhs = pat; c_rhs = Simple_rhs body } in
         Some ([ case ], fp_partial)
     | _ -> None
   in
@@ -782,22 +794,21 @@ and transl_tupled_function ~scopes loc return repr params body =
       && List.length pl <= (Lambda.max_arity ()) ->
       begin try
         let size = List.length pl in
-        let pats_expr_list =
+        let pats_rhs_list =
           List.map
-            (fun {c_lhs; c_guard; c_rhs} ->
-              (Matching.flatten_pattern size c_lhs, c_guard, c_rhs))
+            (fun {c_lhs; c_rhs} -> Matching.flatten_pattern size c_lhs, c_rhs)
             cases in
         let kinds =
           (* All the patterns might not share the same types. We must take the
              union of the patterns types *)
-          match pats_expr_list with
+          match pats_rhs_list with
           | [] -> assert false
-          | (pats, _, _) :: cases ->
+          | (pats, _) :: cases ->
               let first_case_kinds =
                 List.map (fun pat -> value_kind pat.pat_env pat.pat_type) pats
               in
               List.fold_left
-                (fun kinds (pats, _, _) ->
+                (fun kinds (pats,  _) ->
                   List.map2 (fun kind pat ->
                     value_kind_union kind
                       (value_kind pat.pat_env pat.pat_type))
@@ -810,7 +821,7 @@ and transl_tupled_function ~scopes loc return repr params body =
         let params = List.map fst tparams in
         ((Tupled, tparams, return),
          Matching.for_tupled_function ~scopes loc params
-           (transl_tupled_cases ~scopes pats_expr_list) partial)
+           (transl_tupled_cases ~scopes pats_rhs_list) partial)
     with Matching.Cannot_flatten ->
       transl_curried_function ~scopes loc return repr params body
       end
@@ -895,7 +906,7 @@ and transl_curried_function ~scopes loc return repr params body =
 
 and transl_function ~scopes e params body =
   let ((kind, params, return), body) =
-    event_function ~scopes e
+    event_function_expr ~scopes e
       (function repr ->
          let params, body = fuse_method_arity params body in
          transl_function_without_attributes ~scopes e.exp_loc repr params body)
@@ -1075,8 +1086,8 @@ and transl_record ~scopes loc env fields repres opt_init_expr =
 
 and transl_match ~scopes ~loc ~extra_cases arg pat_expr_list partial =
   let rewrite_case (val_cases, exn_cases, static_handlers as acc)
-        ({ c_lhs; c_guard; c_rhs } as case) =
-    if c_rhs.exp_desc = Texp_unreachable then acc else
+        ({ c_lhs; c_rhs } as case) =
+    if is_rhs_unreachable c_rhs then acc else
     let val_pat, exn_pat = split_pattern c_lhs in
     match val_pat, exn_pat with
     | None, None -> assert false
@@ -1089,7 +1100,11 @@ and transl_match ~scopes ~loc ~extra_cases arg pat_expr_list partial =
         let exn_case = transl_case_try ~scopes { case with c_lhs = pe } in
         val_cases, exn_case :: exn_cases, static_handlers
     | Some pv, Some pe ->
-        assert (c_guard = None);
+        let rhs_exp =
+          match c_rhs with
+          | Simple_rhs rhs -> rhs
+          | Boolean_guarded_rhs _ | Pattern_guarded_rhs _ -> assert false
+        in
         let lbl  = next_raise_count () in
         let static_raise ids =
           Lstaticraise (lbl, List.map (fun id -> Lvar id) ids)
@@ -1108,8 +1123,8 @@ and transl_match ~scopes ~loc ~extra_cases arg pat_expr_list partial =
         iter_exn_names Translprim.add_exception_ident pe;
         let rhs =
           Misc.try_finally
-            (fun () -> event_before ~scopes c_rhs
-                         (transl_exp ~scopes c_rhs))
+            (fun () -> event_before ~scopes rhs_exp
+                         (transl_exp ~scopes rhs_exp))
             ~always:(fun () ->
                 iter_exn_names Translprim.remove_exception_ident pe)
         in
@@ -1210,19 +1225,23 @@ and transl_letop ~scopes loc env let_ ands param case partial =
       let_.bop_op_type let_.bop_op_path let_.bop_op_val
   in
   let exp = loop (transl_exp ~scopes let_.bop_exp) ands in
+  let rhs_loc =
+    match case.c_rhs with
+    | Simple_rhs e | Boolean_guarded_rhs { bg_rhs = e } -> e.exp_loc
+    | Pattern_guarded_rhs { pg_loc; _ } -> pg_loc
+  in
   let func =
     let (kind, params, return), body =
-      event_function ~scopes case.c_rhs
+      event_function_rhs ~scopes case.c_rhs
         (function repr ->
-           let loc = case.c_rhs.exp_loc in
-           let ghost_loc = { loc with loc_ghost = true } in
+           let ghost_loc = { rhs_loc with loc_ghost = true } in
            transl_function_without_attributes ~scopes loc repr []
              (Tfunction_cases
                 { cases = [case]; param; partial; loc = ghost_loc;
                   exp_extra = None; attributes = []; }))
     in
     let attr = default_function_attribute in
-    let loc = of_location ~scopes case.c_rhs.exp_loc in
+    let loc = of_location ~scopes rhs_loc in
     lfunction ~kind ~params ~return ~body ~attr ~loc
   in
   Lapply{

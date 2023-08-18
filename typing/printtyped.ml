@@ -934,20 +934,21 @@ and longident_x_pattern i ppf (li, _, p) =
 
 and case
     : type k . _ -> _ -> k case -> unit
-  = fun i ppf {c_lhs; c_guard; c_rhs} ->
+  = fun i ppf {c_lhs; c_rhs} ->
   line i ppf "<case>\n";
   pattern (i+1) ppf c_lhs;
-  begin match c_guard with
-  | None -> ()
-  | Some g -> line (i+1) ppf "<when>\n"; guard (i + 2) ppf g
-  end;
-  expression (i+1) ppf c_rhs;
+  case_rhs (i+1) ppf c_rhs;
 
-and guard i ppf = function
-  | Predicate p -> expression i ppf p
-  | Pattern { pg_scrutinee = e; pg_pattern = pat; _ } ->
-      expression i ppf e;
-      pattern i ppf pat
+and case_rhs i ppf = function
+  | Simple_rhs rhs -> expression i ppf rhs
+  | Boolean_guarded_rhs { bg_guard; bg_rhs } ->
+      line i ppf "<when>\n";
+      expression (i + 1) ppf bg_guard;
+      expression i ppf bg_rhs
+  | Pattern_guarded_rhs { pg_scrutinee; pg_cases; _ } ->
+      line i ppf "<when-pattern>\n";
+      expression (i + 1) ppf pg_scrutinee;
+      list (i + 1) case ppf pg_cases
 
 and value_binding i ppf x =
   line i ppf "<def>\n";

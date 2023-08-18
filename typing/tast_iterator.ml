@@ -22,6 +22,7 @@ type iterator =
     attributes: iterator -> attributes -> unit;
     binding_op: iterator -> binding_op -> unit;
     case: 'k . iterator -> 'k case -> unit;
+    case_rhs: iterator -> case_rhs -> unit;
     class_declaration: iterator -> class_declaration -> unit;
     class_description: iterator -> class_description -> unit;
     class_expr: iterator -> class_expr -> unit;
@@ -34,7 +35,6 @@ type iterator =
     env: iterator -> Env.t -> unit;
     expr: iterator -> expression -> unit;
     extension_constructor: iterator -> extension_constructor -> unit;
-    guard: iterator -> guard -> unit;
     location: iterator -> Location.t -> unit;
     module_binding: iterator -> module_binding -> unit;
     module_coercion: iterator -> module_coercion -> unit;
@@ -612,17 +612,21 @@ let class_field sub {cf_loc; cf_desc; cf_attributes; _} =
 
 let value_bindings sub (_, list) = List.iter (sub.value_binding sub) list
 
-let case sub {c_lhs; c_guard; c_rhs} =
+let case sub {c_lhs; c_rhs} =
   sub.pat sub c_lhs;
-  Option.iter (sub.guard sub) c_guard;
-  sub.expr sub c_rhs
+  sub.case_rhs sub c_rhs
 
-let guard sub = function
-  | Predicate p -> sub.expr sub p
-  | Pattern
-      { pg_scrutinee = e; pg_pattern = pat; pg_partial = _; pg_loc = _; } ->
-      sub.expr sub e;
-      sub.pat sub pat
+let case_rhs sub = function
+  | Simple_rhs e -> sub.expr sub e
+  | Boolean_guarded_rhs { bg_guard; bg_rhs } ->
+      sub.expr sub bg_guard;
+      sub.expr sub bg_rhs
+  | Pattern_guarded_rhs
+      { pg_scrutinee; pg_cases; pg_partial=_; pg_loc; pg_env; pg_type=_ } ->
+      sub.expr sub pg_scrutinee;
+      List.iter (sub.case sub) pg_cases;
+      sub.location sub pg_loc;
+      sub.env sub pg_env
 
 let value_binding sub {vb_loc; vb_pat; vb_expr; vb_attributes; _} =
   sub.location sub vb_loc;
@@ -638,6 +642,7 @@ let default_iterator =
     attributes;
     binding_op;
     case;
+    case_rhs;
     class_declaration;
     class_description;
     class_expr;
@@ -650,7 +655,6 @@ let default_iterator =
     env;
     expr;
     extension_constructor;
-    guard;
     location;
     module_binding;
     module_coercion;

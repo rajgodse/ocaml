@@ -24,6 +24,7 @@ type mapper =
     attributes : mapper -> attributes -> attributes;
     binding_op: mapper -> binding_op -> binding_op;
     case: 'k . mapper -> 'k case -> 'k case;
+    case_rhs: mapper -> case_rhs -> case_rhs;
     class_declaration: mapper -> class_declaration -> class_declaration;
     class_description: mapper -> class_description -> class_description;
     class_expr: mapper -> class_expr -> class_expr;
@@ -38,7 +39,6 @@ type mapper =
     expr: mapper -> expression -> expression;
     extension_constructor: mapper -> extension_constructor ->
       extension_constructor;
-    guard: mapper -> guard -> guard;
     location: mapper -> Location.t -> Location.t;
     module_binding: mapper -> module_binding -> module_binding;
     module_coercion: mapper -> module_coercion -> module_coercion;

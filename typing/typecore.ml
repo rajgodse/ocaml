@@ -256,7 +256,7 @@ type recarg =
 let mk_expected ?explanation ty = { ty; explanation; }
 
 let case lhs rhs =
-  {c_lhs = lhs; c_guard = None; c_rhs = rhs}
+  {c_lhs = lhs; c_rhs = Simple_rhs rhs}
 
 (* Typing of constants *)
 
@@ -2474,12 +2474,18 @@ let rec final_subexpression exp =
   | Texp_sequence (_, e)
   | Texp_try (e, _)
   | Texp_ifthenelse (_, e, _)
-  | Texp_match (_, {c_rhs=e} :: _, _)
   | Texp_letmodule (_, _, _, _, e)
   | Texp_letexception (_, e)
   | Texp_open (_, e)
     -> final_subexpression e
+  | Texp_match (_, {c_rhs=rhs} :: _, _) -> final_case_rhs rhs
   | _ -> exp
+
+and final_case_rhs = function
+  | Simple_rhs e | Boolean_guarded_rhs { bg_rhs = e; _ }-> final_subexpression e
+  | Pattern_guarded_rhs { pg_cases = case :: _; _ } -> final_case_rhs case.c_rhs
+  | Pattern_guarded_rhs { pg_cases = [] } ->
+      fatal_error "Typecore.final_case_rhs"
 
 (* Generalization criterion for expressions *)
 
@@ -2505,19 +2511,19 @@ let rec is_nonexpansive exp =
           | Tpat_exception _ -> true
           | _ -> false } pat
       in
-      is_nonexpansive e &&
-      List.for_all
-        (fun {c_lhs; c_guard; c_rhs} ->
-           let is_guard_nonexpansive = match c_guard with
-             | None -> true
-             | Some (Typedtree.Predicate p) -> is_nonexpansive p
-             | Some (Typedtree.Pattern { pg_scrutinee; pg_pattern; _ }) ->
-                 is_nonexpansive pg_scrutinee
-                 && not (contains_exception_pat pg_pattern)
-           in
-           is_guard_nonexpansive && is_nonexpansive c_rhs
-           && not (contains_exception_pat c_lhs)
-        ) cases
+      let rec is_rhs_nonexpansive = function
+        | Simple_rhs rhs -> is_nonexpansive rhs
+        | Boolean_guarded_rhs { bg_guard; bg_rhs } ->
+            is_nonexpansive bg_guard && is_nonexpansive bg_rhs
+        | Pattern_guarded_rhs { pg_scrutinee; pg_cases } ->
+            is_nonexpansive pg_scrutinee && are_cases_nonexpansive pg_cases
+      and are_cases_nonexpansive cases =
+        List.for_all
+          (fun {c_lhs; c_rhs} ->
+            not (contains_exception_pat c_lhs) && is_rhs_nonexpansive c_rhs)
+          cases
+      in
+      is_nonexpansive e && are_cases_nonexpansive cases
   | Texp_tuple el ->
       List.for_all is_nonexpansive el
   | Texp_construct( _, _, el) ->
@@ -2887,10 +2893,9 @@ let check_partial_application ~statement exp =
             | Texp_extension_constructor _ | Texp_ifthenelse (_, _, None)
             | Texp_function _ ->
                 check_statement ()
-            | Texp_match (_, cases, _) ->
-                List.iter (fun {c_rhs; _} -> check c_rhs) cases
+            | Texp_match (_, cases, _) -> check_cases cases
             | Texp_try (e, cases) ->
-                check e; List.iter (fun {c_rhs; _} -> check c_rhs) cases
+                check e; check_cases cases
             | Texp_ifthenelse (_, e1, Some e2) ->
                 check e1; check e2
             | Texp_let (_, _, e) | Texp_sequence (_, e) | Texp_open (_, e)
@@ -2900,6 +2905,14 @@ let check_partial_application ~statement exp =
                 Location.prerr_warning exp_loc
                   Warnings.Ignored_partial_application
           end
+        and check_cases : 'k. 'k case list -> unit = fun cases ->
+          List.iter
+            (fun { c_rhs; _ } ->
+               match c_rhs with
+                 | Simple_rhs rhs | Boolean_guarded_rhs { bg_rhs = rhs; _ } ->
+                     check rhs
+                 | Pattern_guarded_rhs { pg_cases; _ } -> check_cases pg_cases)
+            cases
         in
         check exp
     | _ ->
@@ -5840,30 +5853,23 @@ and type_cases
     ~require_value_case
     ~type_body:begin
       fun { pc_rhs } pat ~ext_env ~ty_expected ~ty_infer ~contains_gadt:_ ->
-        let guard, exp =
+        let type_rhs rhs =
+          let rhs =
+            type_expect ext_env rhs (mk_expected ?explanation ty_expected)
+          in
+          { rhs with exp_type = instance ty_infer }
+        in
+        let c_rhs =
           match pc_rhs with
-          | Psimple_rhs rhs | Pboolean_guarded_rhs { pbg_rhs = rhs; _ } ->
+          | Psimple_rhs rhs -> Simple_rhs (type_rhs rhs)
+          | Pboolean_guarded_rhs { pbg_guard; pbg_rhs } ->
               let guard =
-                match pc_rhs with
-                (* This case is unreachable, as [pc_rhs] cannot match the
-                   outer pattern while also matching [Ppattern_guarded_rhs _]
-                 *)
-                | Ppattern_guarded_rhs _ -> assert false
-                | Psimple_rhs _ -> None
-                | Pboolean_guarded_rhs { pbg_guard; _ } ->
-                    let expected_bool =
-                      mk_expected ~explanation:When_guard Predef.type_bool
-                    in
-                    let typed_guard =
-                      type_expect ext_env pbg_guard expected_bool
-                    in
-                    Some (Predicate typed_guard)
+                type_expect ext_env pbg_guard
+                  (mk_expected ~explanation:When_guard Predef.type_bool)
               in
-              let exp =
-                type_expect ext_env rhs (mk_expected ?explanation ty_expected)
-              in
-              guard, exp
-          | Ppattern_guarded_rhs { ppg_scrutinee; ppg_cases; ppg_loc = loc } ->
+              let rhs = type_rhs pbg_rhs in
+              Boolean_guarded_rhs { bg_guard = guard; bg_rhs = rhs }
+          | Ppattern_guarded_rhs { ppg_scrutinee; ppg_cases; ppg_loc } ->
               let { arg; cases; partial; } =
                 type_match
                   (* Pattern guards containing no value cases will have an
@@ -5871,27 +5877,22 @@ and type_cases
                      case where no cases match, so we can successfully
                      typecheck such guards. Accordingly, [require_value_case]
                      is set to [false] below. *)
-                  ~require_value_case:false ppg_scrutinee ppg_cases ext_env loc
-                  Check_and_warn_if_total (mk_expected ?explanation ty_expected)
+                  ~require_value_case:false ppg_scrutinee ppg_cases ext_env
+                  ppg_loc Check_and_warn_if_total
+                  (mk_expected ?explanation ty_expected)
               in
-              match cases with
-              | [ { c_lhs = pat; c_guard = None; c_rhs = exp } ] ->
-                  let pattern_guard : Typedtree.guard =
-                    Pattern
-                      { pg_scrutinee = arg
-                      ; pg_pattern = pat
-                      ; pg_partial = partial
-                      ; pg_loc = loc }
-                  in
-                  Some pattern_guard, exp
-              | _ ->
-                  fatal_error
-                    "typechecking for multicase pattern guards unimplemented"
+              Pattern_guarded_rhs
+                { pg_scrutinee = arg
+                ; pg_cases = cases
+                ; pg_partial = partial
+                ; pg_loc = ppg_loc
+                ; pg_env = ext_env
+                ; pg_type = instance ty_infer
+                }
         in
         {
           c_lhs = pat;
-          c_guard = guard;
-          c_rhs = {exp with exp_type = ty_infer}
+          c_rhs
         }
     end
     ~additional_checks_for_split_cases:(fun cases ->

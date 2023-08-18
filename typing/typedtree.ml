@@ -153,22 +153,22 @@ and meth =
   | Tmeth_ancestor of Ident.t * Path.t
 
 and 'k case =
-  {
-    c_lhs: 'k general_pattern;
-    c_guard: guard option;
-    c_rhs: expression;
-  }
+{
+  c_lhs: 'k general_pattern;
+  c_rhs: case_rhs;
+}
 
-and guard =
-  | Predicate of expression
-  | Pattern of pattern_guard
-
-and pattern_guard =
-  { pg_scrutinee      : expression
-  ; pg_pattern        : computation general_pattern
-  ; pg_partial        : partial
-  ; pg_loc            : Location.t
-  }
+and case_rhs =
+  | Simple_rhs of expression
+  | Boolean_guarded_rhs of { bg_guard : expression; bg_rhs : expression }
+  | Pattern_guarded_rhs of
+      { pg_scrutinee : expression
+      ; pg_cases : computation case list
+      ; pg_partial : partial
+      ; pg_loc : Location.t
+      ; pg_env : Env.t
+      ; pg_type : Types.type_expr
+      }
 
 and function_param =
   {
@@ -897,3 +897,7 @@ let rec exp_is_nominal exp =
       true
   | Texp_field (parent, _, _) | Texp_send (parent, _) -> exp_is_nominal parent
   | _ -> false
+
+let is_guarded_rhs = function
+  | Simple_rhs _ -> false
+  | Boolean_guarded_rhs _ | Pattern_guarded_rhs _ -> true
